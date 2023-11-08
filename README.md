@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Language Models for Reinforcement Learning - *Lamorel*
 
 *Lamorel* is a Python library designed for people eager to use Large Language Models (LLMs) in interactive environments (e.g. RL setups).
@@ -352,3 +353,6 @@ This master server listens to requests and dispatches calls (using the [`Dispatc
 Each LLM server performs the asked operations on its received data and sends the results to the master LLM server. The latter gathers results and sends them back to the RL script.
 
 *Lamorel* is still in its very early phase and we are happy to accept any external contribution to it. Please follow the [CONTRIBUTING.md](CONTRIBUTING.md) file.
+=======
+# Alfred
+>>>>>>> 347aa44808eab29c4f08146455885a9eabec4f4f
