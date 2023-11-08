@@ -37,7 +37,7 @@ class Server:
             use_cpu = False
             devices = self._compute_current_device_map(config)
             lamorel_logger.info("Devices on process {} (index {}): {}".format(accelerator.process_index, self._index, devices))
-        self._model = HF_LLM(config.llm_args, devices, use_cpu)
+        self._model = HF_LLM(config.llm_args, devices, use_cpu, config.llmq_args)
         self._dispatcher = Dispatcher(self._llm_group, self._rl_llm_group_size - 1, self._llm_group_size,
                                       self._is_main_server, self._master_server_rank, self._index)
 
@@ -84,14 +84,16 @@ class Server:
         # Compute how to partition local GPUs for local LLMs
         cuda_device_ids = np.arange(torch.cuda.device_count())
         processes_devices = np.array_split(cuda_device_ids, len(current_machine_processes) - n_shared_rl_processes)
-        current_process_devices = list(processes_devices[_local_llm_index])
+        # current_process_devices = list(processes_devices[_local_llm_index])
+        current_process_devices = [int(x) for x in processes_devices[_local_llm_index]]
+
         if len(current_process_devices) > config.llm_args.parallelism.model_parallelism_size:
             lamorel_logger.info(
                 f"{len(current_process_devices)} gpus available for current LLM but using only model_parallelism_size "
                 f"= {config.llm_args.parallelism.model_parallelism_size}")
             current_process_devices = \
                 current_process_devices[:config.llm_args.parallelism.model_parallelism_size]
-
+        
         return current_process_devices
 
     def _process_calls(self, calls):
@@ -121,28 +123,32 @@ class Server:
         while True:
             #### Receive calls from RL processes and dispatch them over LLMs ####
             method_calls = [None for _ in range(self._rl_llm_group_size)]
-            if self._is_main_server:
-                dist.gather_object(
-                    obj=None, object_gather_list=method_calls, dst=accelerator.process_index, group=self._rl_llm_group
-                )
-                method_calls = method_calls[:-1]  # remove last one coming from current process
+            if self._is_main_server: 
+                try:   
+                    dist.gather_object(
+                        obj=None, object_gather_list=method_calls, dst=accelerator.process_index, group=self._rl_llm_group
+                    )
+                except Exception as e:
+                    print(f"Error during gather_object: {e}")
+                method_calls = method_calls[:-1]  # remove last one coming from current process   
                 assert len(set([call["instruction"] for call in method_calls])) <= 1  # check all calls are the same
-            calls_to_process = self._dispatcher.dispatch(method_calls)
-            current_process_results = self._process_calls(calls_to_process)
-            if current_process_results[1] is not None:  # expected answer from caller
-                gathered_results = self._dispatcher.gather(current_process_results)
-                if self._is_main_server:
-                    assert len(gathered_results) == self._rl_llm_group_size-1
-                    if method_calls[0]["instruction"] in [InstructionsEnum.FORWARD, InstructionsEnum.GENERATE]:
-                        for idx, _call in enumerate(method_calls):
-                            if 'candidates' in _call:
-                                if "__score" in method_calls[0]["module_function_keys"]:
-                                    for i in range(len(_call["contexts"])):
-                                        assert len(gathered_results[idx][i]["__score"]) == len(_call["candidates"][i])
-                            else: # enough generations
-                                assert len(_call["contexts"]) == len(gathered_results[idx])
+         
+                calls_to_process = self._dispatcher.dispatch(method_calls)
+                current_process_results = self._process_calls(calls_to_process)
+                if current_process_results[1] is not None:  # expected answer from caller
+                    gathered_results = self._dispatcher.gather(current_process_results)
+                    if self._is_main_server:
+                        assert len(gathered_results) == self._rl_llm_group_size-1
+                        if method_calls[0]["instruction"] in [InstructionsEnum.FORWARD, InstructionsEnum.GENERATE]:
+                            for idx, _call in enumerate(method_calls):
+                                if 'candidates' in _call:
+                                    if "__score" in method_calls[0]["module_function_keys"]:
+                                        for i in range(len(_call["contexts"])):
+                                            assert len(gathered_results[idx][i]["__score"]) == len(_call["candidates"][i])
+                                else: # enough generations
+                                    assert len(_call["contexts"]) == len(gathered_results[idx])
 
-                    dist.broadcast_object_list(object_list=gathered_results + [None], src=self._master_server_rank,
-                                               group=self._rl_llm_group)
+                        dist.broadcast_object_list(object_list=gathered_results + [None], src=self._master_server_rank,
+                                                group=self._rl_llm_group)
 
 

@@ -8,7 +8,7 @@ lamorel_args:
     config_file: ../configs/accelerate/default_config.yaml
     machine_rank: 0
     main_process_ip: 127.0.0.1
-    num_machines: 2
+    num_machines: 1
   llm_args:
     model_type: seq2seq
     model_path: t5-small
@@ -22,7 +22,7 @@ lamorel_args:
       empty_cuda_cache_after_scoring: false
 rl_script_args:
   path: ???
-  name_environment: 'BabyAI-GoToRedBall-v0'
+  name_environment: 'BabyAI-MixedTrainLocal'
   epochs: 2
   steps_per_epoch: 128
   minibatch_size: 64

@@ -1,7 +1,3 @@
-from enum import Enum
-
-# from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer, AutoConfig
-
 import os
 import math
 import torch
@@ -10,7 +6,6 @@ from typing import TYPE_CHECKING, Literal, Optional, Tuple
 
 from transformers import (
     AutoConfig,
-    AutoModelForSeq2SeqLM,
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
@@ -21,64 +16,51 @@ from transformers import (
 from transformers.models.llama import modeling_llama as LlamaModule
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
+from trl import AutoModelForCausalLMWithValueHead
 
 try:
     from transformers.integrations import is_deepspeed_zero3_enabled
 except ImportError: # https://github.com/huggingface/transformers/releases/tag/v4.33.1
     from transformers.deepspeed import is_deepspeed_zero3_enabled
 
-# import ipdb;ipdb.set_trace()
-from ..llmtuner.extras.logging import reset_logging, get_logger
-from ..llmtuner.extras.misc import count_parameters
-from ..llmtuner.extras.patches import llama_patch as LlamaPatches
-from ..llmtuner.extras.save_and_load import load_valuehead_params
-from ..llmtuner.hparams import FinetuningArguments
-# from ..llmtuner.tuner.core.adapter import init_adapter
-# from ..llmtuner.tuner.core.utils import prepare_model_for_training
+from llmtuner.extras.logging import reset_logging, get_logger
+from llmtuner.extras.misc import count_parameters
+from llmtuner.extras.patches import llama_patch as LlamaPatches
+from llmtuner.extras.save_and_load import load_valuehead_params
+from llmtuner.hparams import FinetuningArguments
+from llmtuner.tuner.core.adapter import init_adapter
+from llmtuner.tuner.core.utils import prepare_model_for_training
 
-class ModelTypesEnum(Enum):
-    causal = AutoModelForCausalLM
-    seq2seq = AutoModelForSeq2SeqLM
-
-
-def load_hf_model_and_tokenizer_original(type, path, pretrained):
-    print("Loading model {}".format(path))
-    tokenizer = AutoTokenizer.from_pretrained(path)
-
-    # Select class according to type
-    config = AutoConfig.from_pretrained(path)
-
-    n_layers_key = 'num_hidden_layers'
-    if hasattr(config, "attribute_map") and n_layers_key in config.attribute_map:
-        n_layers_key = config.attribute_map[n_layers_key]
-
-    n_layers = getattr(config, n_layers_key)
-    model_class = ModelTypesEnum[type].value
-    if pretrained:
-        model_method = lambda **kwargs: model_class.from_pretrained(path, **kwargs)
-
-    else:
-        model_method = lambda **kwargs: model_class.from_config(config, **kwargs)
-
-    return tokenizer, model_method, n_layers
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizer
+    from llmtuner.hparams import ModelArguments
 
 
+logger = get_logger(__name__)
 
 
-def load_hf_model_and_tokenizer_complex(
+check_min_version("4.30.0")
+require_version("datasets>=2.12.0", "To fix: pip install datasets>=2.12.0")
+require_version("accelerate>=0.21.0", "To fix: pip install accelerate>=0.21.0")
+require_version("peft>=0.4.0", "To fix: pip install peft>=0.4.0")
+require_version("trl>=0.7.1", "To fix: pip install trl>=0.7.1")
+
+
+def load_model_and_tokenizer(
     model_args: "ModelArguments",
-    # finetuning_args: "FinetuningArguments",
+    finetuning_args: "FinetuningArguments",
     is_trainable: Optional[bool] = False,
-    # stage: Optional[Literal["pt", "sft", "rm", "ppo"]] = "sft"
+    stage: Optional[Literal["pt", "sft", "rm", "ppo"]] = "sft"
 ) -> Tuple[PreTrainedModel, "PreTrainedTokenizer"]:
     r"""
     Loads pretrained model and tokenizer.
 
     Support both training and inference.
     """
-    # if (not is_trainable) and model_args.checkpoint_dir is None:
-    #     # logger.warning("Checkpoint is not found at evaluation, load the original model.")
-    #     finetuning_args = FinetuningArguments(finetuning_type="none")
+    if (not is_trainable) and model_args.checkpoint_dir is None:
+        logger.warning("Checkpoint is not found at evaluation, load the original model.")
+        finetuning_args = FinetuningArguments(finetuning_type="none")
+
     config_kwargs = {
         "trust_remote_code": True,
         "cache_dir": model_args.cache_dir,
@@ -93,60 +75,58 @@ def load_hf_model_and_tokenizer_complex(
         **config_kwargs
     )
 
-    # if finetuning_args.finetuning_type != "lora" and model_args.checkpoint_dir is not None:
-    #     model_to_load = model_args.checkpoint_dir[0]
-    # else:
-    model_to_load = model_args.model_name_or_path
+    if finetuning_args.finetuning_type != "lora" and model_args.checkpoint_dir is not None:
+        model_to_load = model_args.checkpoint_dir[0]
+    else:
+        model_to_load = model_args.model_name_or_path
 
     config = AutoConfig.from_pretrained(model_to_load, **config_kwargs)
 
     # Fix tokenizer (for ChatGLM2)
-    # if getattr(config, "model_type", None) == "chatglm":
-    #     tokenizer._pad = MethodType(PreTrainedTokenizerBase._pad, tokenizer)
+    if getattr(config, "model_type", None) == "chatglm":
+        tokenizer._pad = MethodType(PreTrainedTokenizerBase._pad, tokenizer)
 
-    # # Fix config (for Qwen)
-    # if getattr(config, "model_type", None) == "qwen":
-    #     setattr(config, "fp16", model_args.compute_dtype == torch.float16)
-    #     setattr(config, "bf16", model_args.compute_dtype == torch.bfloat16)
-    #     setattr(config, "fp32", model_args.compute_dtype == torch.float32)
+    # Fix config (for Qwen)
+    if getattr(config, "model_type", None) == "qwen":
+        setattr(config, "fp16", model_args.compute_dtype == torch.float16)
+        setattr(config, "bf16", model_args.compute_dtype == torch.bfloat16)
+        setattr(config, "fp32", model_args.compute_dtype == torch.float32)
 
     # Set RoPE scaling
     if model_args.rope_scaling is not None:
         if hasattr(config, "use_dynamic_ntk"): # for Qwen models
             if is_trainable:
-                pass
-                # logger.warning("Qwen model does not support RoPE scaling in training.")
+                logger.warning("Qwen model does not support RoPE scaling in training.")
             else:
                 setattr(config, "use_dynamic_ntk", True)
                 setattr(config, "use_logn_attn", True)
-                # logger.info("Using dynamic NTK scaling.")
+                logger.info("Using dynamic NTK scaling.")
 
         elif hasattr(config, "rope_scaling"): # for LLaMA and Falcon models
             require_version("transformers>=4.31.0", "RoPE scaling requires transformers>=4.31.0")
             if is_trainable:
-                # if model_args.rope_scaling == "dynamic":
-                    # logger.warning(
-                    #     "Dynamic NTK may not work well with fine-tuning. "
-                    #     "See: https://github.com/huggingface/transformers/pull/24653"
-                    # )
+                if model_args.rope_scaling == "dynamic":
+                    logger.warning(
+                        "Dynamic NTK may not work well with fine-tuning. "
+                        "See: https://github.com/huggingface/transformers/pull/24653"
+                    )
 
                 current_max_length = getattr(config, "max_position_embeddings", None)
                 if current_max_length and model_args.model_max_length > current_max_length:
                     scaling_factor = float(math.ceil(model_args.model_max_length / current_max_length))
                 else:
-                    # logger.warning("Input length is smaller than max length. Consider increase input length.")
+                    logger.warning("Input length is smaller than max length. Consider increase input length.")
                     scaling_factor = 1.0
             else:
                 scaling_factor = 2.0
 
             setattr(config, "rope_scaling", {"type": model_args.rope_scaling, "factor": scaling_factor})
-            # logger.info("Using {} scaling strategy and setting scaling factor to {}".format(
-            #     model_args.rope_scaling, scaling_factor
-            # ))
+            logger.info("Using {} scaling strategy and setting scaling factor to {}".format(
+                model_args.rope_scaling, scaling_factor
+            ))
 
         else:
-            pass
-            # logger.warning("Current model does not support RoPE scaling.")
+            logger.warning("Current model does not support RoPE scaling.")
 
     # Set FlashAttention-2
     if model_args.flash_attn:
@@ -155,12 +135,12 @@ def load_hf_model_and_tokenizer_complex(
             LlamaModule.LlamaModel._prepare_decoder_attention_mask = (
                 LlamaPatches._prepare_decoder_attention_mask
             )
-            # logger.info("Using FlashAttention-2 for faster training and inference.")
-        # else:
-        #     logger.warning("Current model does not support FlashAttention-2.")
+            logger.info("Using FlashAttention-2 for faster training and inference.")
+        else:
+            logger.warning("Current model does not support FlashAttention-2.")
     elif is_trainable and model_args.shift_attn and getattr(config, "model_type", None) == "llama":
         LlamaModule.LlamaAttention = LlamaPatches.LlamaShiftShortAttention
-        # logger.warning("Using `--flash_attn` for faster training in large context length.")
+        logger.warning("Using `--flash_attn` for faster training in large context length.")
 
     # Quantization configurations (using bitsandbytes library).
     is_mergeable = True
@@ -185,7 +165,7 @@ def load_hf_model_and_tokenizer_complex(
 
         is_mergeable = False
         config_kwargs["device_map"] = {"": int(os.environ.get("LOCAL_RANK", "0"))} if is_trainable else "auto"
-        # logger.info("Quantizing model to {} bit.".format(model_args.quantization_bit))
+        logger.info("Quantizing model to {} bit.".format(model_args.quantization_bit))
 
     # Load and prepare pre-trained models (without valuehead).
     model = AutoModelForCausalLM.from_pretrained(
@@ -200,10 +180,9 @@ def load_hf_model_and_tokenizer_complex(
     if is_trainable and model_args.shift_attn:
         if getattr(config, "model_type", None) == "llama":
             setattr(model, "shift_ratio", 0.25)
-            # logger.info("Using shift short attention proposed by LongLoRA.")
+            logger.info("Using shift short attention proposed by LongLoRA.")
         else:
-            pass
-            # logger.warning("Current model does not support shift short attention.")
+            logger.warning("Current model does not support shift short attention.")
 
     # Disable custom generate method (for Qwen and Baichuan2)
     if isinstance(model, PreTrainedModel) and "GenerationMixin" not in str(model.generate.__func__):
@@ -220,5 +199,40 @@ def load_hf_model_and_tokenizer_complex(
         model.__class__.register_for_auto_class()
     if isinstance(tokenizer, PreTrainedTokenizerBase) and "AutoTokenizer" in tokenizer.init_kwargs.get("auto_map", {}):
         tokenizer.__class__.register_for_auto_class()
+
+    # Initialize adapters
+    if is_trainable:
+        model = prepare_model_for_training(model, model_args.layernorm_dtype, finetuning_args.finetuning_type)
+    model = init_adapter(model, model_args, finetuning_args, is_trainable, is_mergeable)
+    model = model.train() if is_trainable else model.eval()
+
+    # Prepare model with valuehead for RLHF
+    if stage == "rm" or stage == "ppo":
+        model = AutoModelForCausalLMWithValueHead.from_pretrained(model)
+        model._keys_to_ignore_on_save = None
+        reset_logging()
+        if stage == "rm" and model_args.checkpoint_dir is not None: # load valuehead weights to evaluate reward model
+            logger.warning("Only the last checkpoint containing valuehead will be loaded.")
+            if load_valuehead_params(model, model_args.checkpoint_dir[-1]):
+                model.v_head.load_state_dict({
+                    "summary.weight": getattr(model, "reward_head_weight"),
+                    "summary.bias": getattr(model, "reward_head_bias")
+                })
+
+        if stage == "ppo": # load reward model
+            logger.info("Load reward model from {}".format(model_args.reward_model))
+            if getattr(model, "is_peft_model", False):
+                model.pretrained_model.load_adapter(model_args.reward_model, "reward")
+            assert load_valuehead_params(model, model_args.reward_model), "Reward model is not correctly loaded."
+
+    # Prepare model for inference
+    if not is_trainable:
+        model.requires_grad_(False) # fix all model params
+        model = model.to(model_args.compute_dtype) if model_args.quantization_bit is None else model
+
+    trainable_params, all_param = count_parameters(model)
+    logger.info("trainable params: {:d} || all params: {:d} || trainable%: {:.4f}".format(
+        trainable_params, all_param, 100 * trainable_params / all_param
+    ))
 
     return model, tokenizer

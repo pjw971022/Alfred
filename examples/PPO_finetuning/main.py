@@ -145,7 +145,7 @@ class PPOUpdater(BaseUpdater):
 
         return {'loss': loss, 'value_loss': value_loss, 'policy_loss': policy_loss}
 
-
+from PIL import Image
 
 @hydra.main(config_path='config', config_name='config')
 def main(config_args):
@@ -196,6 +196,7 @@ def main(config_args):
     for epoch in range(config_args.rl_script_args.epochs):
         for t in range(config_args.rl_script_args.steps_per_epoch):
             prompt = generate_prompt(o)
+            print("prompt: ",prompt)
             output = lm_server.custom_module_fns(['score', 'value'],
                                                  contexts=[prompt],
                                                  candidates=[actions],
@@ -208,6 +209,10 @@ def main(config_args):
             a = action.cpu().item()
 
             _o, r, d, _infos = env.step(a)
+
+            # img = env.render(mode="rgb_array")
+            # img = Image.fromarray(img)
+            # img.save(f'/home/pjw971022/RL/ConstGym/Grounding_LLMs_with_online_RL/outputs/babyai_render/save{epoch}_{t}.jpg')
             next_o = {
                 "mission": _o["mission"],
                 "descriptions": _infos["descriptions"]

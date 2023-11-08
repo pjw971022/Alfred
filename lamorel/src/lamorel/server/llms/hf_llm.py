@@ -4,7 +4,7 @@ from math import ceil
 import logging
 lamorel_logger = logging.getLogger('lamorel_logger')
 
-from .utils import load_hf_model_and_tokenizer
+from .utils import load_hf_model_and_tokenizer_original, load_hf_model_and_tokenizer_simple, load_hf_model_and_tokenizer_complex
 from .base_llm import BaseLLM
 
 # Accelerate
@@ -12,8 +12,14 @@ from accelerate import Accelerator, infer_auto_device_map, init_empty_weights
 accelerator = Accelerator()
 
 from contextlib import nullcontext
-
-
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+import sys
+sys.path.append('/home/pjw971022/RL/ConstGym/Grounding_LLMs_with_online_RL/lamorel/lamorel/src/lamorel/server/llms')
+from .llmtuner.tuner.core import get_infer_args
+from .llmtuner.extras.misc import dispatch_model
+from transformers import BitsAndBytesConfig
 class HF_LLM(BaseLLM):
     """
     This class is a wrapper around the language model, and handles distributing
@@ -21,13 +27,17 @@ class HF_LLM(BaseLLM):
     For each task the default is text in, text out.
     """
 
-    def __init__(self, args, devices, use_cpu):
+    def __init__(self, args, devices, use_cpu, model_args):
         super().__init__(args, devices, use_cpu)
         print("Parallelising HF LLM on {} devices".format(len(self.devices)))
-        # Load model and tokenizer
-        self._LLM_tokenizer, _model_constructor, num_layers = load_hf_model_and_tokenizer(
+       
+        
+        # if args.model_type == 'seq2seq':
+             # Load model and tokenizer
+        self._LLM_tokenizer, _model_constructor, num_layers = load_hf_model_and_tokenizer_original(
             args.model_type, args.model_path, args.pretrained)
-
+        
+        
         if use_cpu:
             # Current version of the lib does not support parallelization with cpu
             self._LLM_model = _model_constructor().to('cpu')
@@ -44,8 +54,21 @@ class HF_LLM(BaseLLM):
                     }
                 )
 
-            self._LLM_model = _model_constructor(device_map=device_map)
-
+            self._LLM_model = _model_constructor(
+                    load_in_4bit=True,
+                    torch_dtype=torch.bfloat16,
+                    quantization_config=BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.bfloat16,
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_quant_type='nf4'
+                    ),
+                    device_map=device_map)
+        # else:
+        #     model_args,_,_,_ = get_infer_args(model_args)
+        #     self._LLM_model, self._LLM_tokenizer = load_hf_model_and_tokenizer_complex(model_args)
+            # self._LLM_model = dispatch_model(model)
+            
         # Set minibatch generation
         self.__input_encoder = None
         self._scoring_minibatch_size = args.minibatch_size
@@ -60,10 +83,10 @@ class HF_LLM(BaseLLM):
         else:
             raise NotImplementedError()
 
-        if self._LLM_tokenizer.pad_token is not None:
-            self.pad_token = 0  # self._LLM_tokenizer(self._LLM_tokenizer.pad_token)
-        else:
-            self.pad_token = 0  # self._LLM_tokenizer(" ")
+        # if self._LLM_tokenizer.pad_token is not None:
+        #     self.pad_token = 0  # self._LLM_tokenizer(self._LLM_tokenizer.pad_token)
+        # else:
+        self.pad_token = 0  # self._LLM_tokenizer(" ")
         self.__synchronize_gpus_after_scoring = args.parallelism.synchronize_gpus_after_scoring
         self.__empty_cuda_cache_after_scoring = args.parallelism.empty_cuda_cache_after_scoring
 
@@ -261,7 +284,6 @@ class HF_LLM(BaseLLM):
                 lamorel_logger.debug(f"Calling forward on process {accelerator.process_index}")
                 _outputs = self._LLM_model(**minibatch)  # Get scores before softmax
                 lamorel_logger.debug(f"Forward succeeded on process {accelerator.process_index}")
-
                 for _key in module_function_keys:
                     lamorel_logger.debug(f"Computing {_key} function")
                     _fn = self._module_functions[_key]

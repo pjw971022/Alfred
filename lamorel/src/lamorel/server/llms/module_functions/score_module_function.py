@@ -12,8 +12,8 @@ class ScoreModuleFunction(BaseModuleFunction):
 
     def forward(self, forward_outputs, minibatch, tokenized_contexts,  **kwargs):
         if self._model_type == "causal":  # hence input should be removed from result
-            logits = forward_outputs["logits"][:, len(tokenized_contexts["input_ids"]) - 1:-1, :]
-            output_tokens = minibatch["input_ids"][:, len(tokenized_contexts["input_ids"]):]
+            logits = forward_outputs["logits"][:, len(tokenized_contexts[0]["input_ids"]) - 1:-1, :]
+            output_tokens = minibatch["input_ids"][:, len(tokenized_contexts[0]["input_ids"]):]
         else:
             logits = forward_outputs["logits"][:, :-1, :]  # skip </s> token appended by tokenizer
             output_tokens = minibatch["decoder_input_ids"][:, 1:]  # skip pad token

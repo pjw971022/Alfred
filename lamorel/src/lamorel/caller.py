@@ -9,7 +9,7 @@ lamorel_logger = logging.getLogger('lamorel_logger')
 
 accelerator = Accelerator()
 
-class Caller:
+class Caller: # @
     '''
     This class should be called by each process.
     It will instantiate the different distributed groups.

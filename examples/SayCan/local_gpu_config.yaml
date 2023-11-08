@@ -7,8 +7,8 @@ lamorel_args:
   accelerate_args:
     config_file: ../configs/accelerate/default_config.yaml
     machine_rank: 0
-    num_machines: 2
-  llm_args:
+    num_machines: 1
+  llm_args: # @
     model_type: seq2seq
     model_path: t5-small
     pretrained: true
@@ -16,7 +16,7 @@ lamorel_args:
     pre_encode_inputs: true
     parallelism:
       use_gpu: true
-      model_parallelism_size: 1
+      model_parallelism_size: 2
       synchronize_gpus_after_scoring: false
       empty_cuda_cache_after_scoring: false
 rl_script_args:

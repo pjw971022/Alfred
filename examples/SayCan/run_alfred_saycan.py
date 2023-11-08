@@ -16,30 +16,30 @@ from lamorel import Caller, lamorel_init
 lamorel_init()
 
 
-def affordance_scoring(options, found_objects, verbose=False, block_name="box", bowl_name="circle",
-                       termination_string="done()"):
-    '''
-    Given this environment does not have RL-trained policies or an asscociated value function, we use affordances through an object detector.
-    '''
-    affordance_scores = {}
-    found_objects = [
-        found_object.replace(block_name, "block").replace(bowl_name, "bowl")
-        for found_object in found_objects + list(PLACE_TARGETS.keys())[-5:]]
-    verbose and print("found_objects", found_objects)
-    for option in options:
-        if option == termination_string:
-            affordance_scores[option] = 0.2
-            continue
-        pick, place = option.replace("robot.pick_and_place(", "").replace(")", "").split(", ")
-        affordance = 0
-        found_objects_copy = found_objects.copy()
-        if pick in found_objects_copy:
-            found_objects_copy.remove(pick)
-            if place in found_objects_copy:
-                affordance = 1
-        affordance_scores[option] = affordance
-        verbose and print(affordance, '\t', option)
-    return affordance_scores
+# def affordance_scoring(options, found_objects, verbose=False, block_name="box", bowl_name="circle",
+#                        termination_string="done()"):
+#     '''
+#     Given this environment does not have RL-trained policies or an asscociated value function, we use affordances through an object detector.
+#     '''
+#     affordance_scores = {}
+#     found_objects = [
+#         found_object.replace(block_name, "block").replace(bowl_name, "bowl")
+#         for found_object in found_objects + list(PLACE_TARGETS.keys())[-5:]]
+#     verbose and print("found_objects", found_objects)
+#     for option in options:
+#         if option == termination_string:
+#             affordance_scores[option] = 0.2
+#             continue
+#         pick, place = option.replace("robot.pick_and_place(", "").replace(")", "").split(", ")
+#         affordance = 0
+#         found_objects_copy = found_objects.copy()
+#         if pick in found_objects_copy:
+#             found_objects_copy.remove(pick)
+#             if place in found_objects_copy:
+#                 affordance = 1
+#         affordance_scores[option] = affordance
+#         verbose and print(affordance, '\t', option)
+#     return affordance_scores
 
 
 def plot_scene(env):
@@ -47,13 +47,18 @@ def plot_scene(env):
     plt.show()
 
 
+from hlsm.lgp.env.alfred.alfred_env import AlfredEnv
+
 @hydra.main(config_path='config', config_name='config')
 def main(config_args):
     # Instantiate Lamorel's Caller
     lm_server = Caller(config_args.lamorel_args)
 
     # Set environment
-    env = PickPlaceEnv() 
+    # env = PickPlaceEnv()
+    env = AlfredEnv(device=device,
+                setup=exp_def.Setup.env_setup.d,
+                hparams=exp_def.Hyperparams.d)
     np.random.seed(2)
     possible_actions = get_possible_actions(PICK_TARGETS, PLACE_TARGETS, config_args.rl_script_args.termination_str)
     task = "put all the blocks in different corners."
@@ -74,13 +79,13 @@ def main(config_args):
         
         # Get description
         scene_description = build_scene_description(available_objects)
-
+        
         # Compute scene affordances
         affordance_scores = affordance_scoring(possible_actions, available_objects,
                                                block_name="box",
                                                bowl_name="circle",
                                                verbose=False)
-
+        
         # Get SayCan's plan
         ## Build prompt template
         prompt = base_prompt
@@ -94,6 +99,9 @@ def main(config_args):
 
             ## Compute combined scores given affordance scores
             llm_scores = {_key: _score for _key, _score in zip(possible_actions, raw_llm_scores)}
+            # for i in range(10):
+                
+                
             combined_scores = {_action: llm_scores[_action] * affordance_scores[_action] for _action in possible_actions}
             combined_scores = normalize_scores(combined_scores)
 
