@@ -4,22 +4,20 @@ from math import ceil
 import logging
 lamorel_logger = logging.getLogger('lamorel_logger')
 
-from .utils import load_hf_model_and_tokenizer_original, load_hf_model_and_tokenizer_simple, load_hf_model_and_tokenizer_complex
+from .utils import load_hf_model_and_tokenizer_original, load_hf_model_and_tokenizer_complex
 from .base_llm import BaseLLM
 
 # Accelerate
 from accelerate import Accelerator, infer_auto_device_map, init_empty_weights
 accelerator = Accelerator()
-
 from contextlib import nullcontext
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
-import sys
-sys.path.append('/home/pjw971022/RL/ConstGym/Grounding_LLMs_with_online_RL/lamorel/lamorel/src/lamorel/server/llms')
-from .llmtuner.tuner.core import get_infer_args
-from .llmtuner.extras.misc import dispatch_model
-from transformers import BitsAndBytesConfig
+import typing
+# from .llmtuner.tuner.core import get_infer_args
+# from .llmtuner.extras.misc import dispatch_model
+
 class HF_LLM(BaseLLM):
     """
     This class is a wrapper around the language model, and handles distributing
@@ -30,44 +28,17 @@ class HF_LLM(BaseLLM):
     def __init__(self, args, devices, use_cpu, model_args):
         super().__init__(args, devices, use_cpu)
         print("Parallelising HF LLM on {} devices".format(len(self.devices)))
-       
-        
         # if args.model_type == 'seq2seq':
              # Load model and tokenizer
         self._LLM_tokenizer, _model_constructor, num_layers = load_hf_model_and_tokenizer_original(
             args.model_type, args.model_path, args.pretrained)
         
-        
         if use_cpu:
             # Current version of the lib does not support parallelization with cpu
             self._LLM_model = _model_constructor().to('cpu')
         else:
-            # Set model parallelism
-            with init_empty_weights():
-                self._LLM_model = _model_constructor()
-                self._LLM_model.tie_weights()
-                device_map = infer_auto_device_map(
-                    model=self._LLM_model,
-                    max_memory={
-                        _device: torch.cuda.mem_get_info(f'cuda:{_device}')[0]
-                        for _device in devices
-                    }
-                )
-
-            self._LLM_model = _model_constructor(
-                    load_in_4bit=True,
-                    torch_dtype=torch.bfloat16,
-                    quantization_config=BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_compute_dtype=torch.bfloat16,
-                        bnb_4bit_use_double_quant=True,
-                        bnb_4bit_quant_type='nf4'
-                    ),
-                    device_map=device_map)
-        # else:
-        #     model_args,_,_,_ = get_infer_args(model_args)
-        #     self._LLM_model, self._LLM_tokenizer = load_hf_model_and_tokenizer_complex(model_args)
-            # self._LLM_model = dispatch_model(model)
+            self._LLM_model, self._LLM_tokenizer = load_hf_model_and_tokenizer_complex(model_args)
+            # self._LLM_model = dispatch_model(self._LLM_model)
             
         # Set minibatch generation
         self.__input_encoder = None
@@ -170,7 +141,13 @@ class HF_LLM(BaseLLM):
         for key, value in input.items():
             input_batch[key] = torch.tensor(value, device=self.device)
         return self._LLM_model.encoder(**input_batch, return_dict=False)[0].to(self.device)
+    
+    def score(self, contexts, candidates):
+        module_function_keys = ["__score"]
+        result = self.forward(module_function_keys,contexts,candidates)
 
+        return result
+    
     def generate(self, contexts, **kwargs):
         generations = []
         for text_input in contexts:

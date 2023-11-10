@@ -1,8 +1,6 @@
 import os
 import torch
 from transformers.trainer import WEIGHTS_NAME
-import sys
-sys.path.append('/home/pjw971022/RL/ConstGym/Grounding_LLMs_with_online_RL/lamorel/lamorel/src/lamorel/server/llms')
 from llmtuner.extras.logging import get_logger
 
 

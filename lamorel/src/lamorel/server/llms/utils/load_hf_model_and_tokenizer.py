@@ -27,14 +27,26 @@ try:
 except ImportError: # https://github.com/huggingface/transformers/releases/tag/v4.33.1
     from transformers.deepspeed import is_deepspeed_zero3_enabled
 
-# import ipdb;ipdb.set_trace()
-from ..llmtuner.extras.logging import reset_logging, get_logger
-from ..llmtuner.extras.misc import count_parameters
-from ..llmtuner.extras.patches import llama_patch as LlamaPatches
-from ..llmtuner.extras.save_and_load import load_valuehead_params
-from ..llmtuner.hparams import FinetuningArguments
-# from ..llmtuner.tuner.core.adapter import init_adapter
-# from ..llmtuner.tuner.core.utils import prepare_model_for_training
+
+try:
+    from transformers.utils import is_torch_bf16_gpu_available, is_torch_npu_available, is_torch_cuda_available
+    is_fp16_available = is_torch_cuda_available()
+    is_bf16_available = is_torch_bf16_gpu_available()
+    is_npu_available = is_torch_npu_available()
+except ImportError:
+    is_fp16_available = torch.cuda.is_available()
+    is_bf16_available = torch.cuda.is_bf16_supported()
+    is_npu_available = False
+
+def _infer_dtype() -> torch.dtype:
+    if is_npu_available:
+        return torch.float16
+    elif is_bf16_available:
+        return torch.bfloat16
+    elif is_fp16_available:
+        return torch.float16
+    else:
+        return torch.float32
 
 class ModelTypesEnum(Enum):
     causal = AutoModelForCausalLM
@@ -82,13 +94,13 @@ def load_hf_model_and_tokenizer_complex(
     config_kwargs = {
         "trust_remote_code": True,
         "cache_dir": model_args.cache_dir,
-        "revision": model_args.model_revision,
-        "use_auth_token": True if model_args.use_auth_token else None,
+        "revision": "main",
+        "use_auth_token": None,
     }
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
-        use_fast=model_args.use_fast_tokenizer,
+        use_fast=True,
         padding_side="right", # training with left-padded tensors in fp16 precision may cause overflow
         **config_kwargs
     )
@@ -100,69 +112,7 @@ def load_hf_model_and_tokenizer_complex(
 
     config = AutoConfig.from_pretrained(model_to_load, **config_kwargs)
 
-    # Fix tokenizer (for ChatGLM2)
-    # if getattr(config, "model_type", None) == "chatglm":
-    #     tokenizer._pad = MethodType(PreTrainedTokenizerBase._pad, tokenizer)
-
-    # # Fix config (for Qwen)
-    # if getattr(config, "model_type", None) == "qwen":
-    #     setattr(config, "fp16", model_args.compute_dtype == torch.float16)
-    #     setattr(config, "bf16", model_args.compute_dtype == torch.bfloat16)
-    #     setattr(config, "fp32", model_args.compute_dtype == torch.float32)
-
-    # Set RoPE scaling
-    if model_args.rope_scaling is not None:
-        if hasattr(config, "use_dynamic_ntk"): # for Qwen models
-            if is_trainable:
-                pass
-                # logger.warning("Qwen model does not support RoPE scaling in training.")
-            else:
-                setattr(config, "use_dynamic_ntk", True)
-                setattr(config, "use_logn_attn", True)
-                # logger.info("Using dynamic NTK scaling.")
-
-        elif hasattr(config, "rope_scaling"): # for LLaMA and Falcon models
-            require_version("transformers>=4.31.0", "RoPE scaling requires transformers>=4.31.0")
-            if is_trainable:
-                # if model_args.rope_scaling == "dynamic":
-                    # logger.warning(
-                    #     "Dynamic NTK may not work well with fine-tuning. "
-                    #     "See: https://github.com/huggingface/transformers/pull/24653"
-                    # )
-
-                current_max_length = getattr(config, "max_position_embeddings", None)
-                if current_max_length and model_args.model_max_length > current_max_length:
-                    scaling_factor = float(math.ceil(model_args.model_max_length / current_max_length))
-                else:
-                    # logger.warning("Input length is smaller than max length. Consider increase input length.")
-                    scaling_factor = 1.0
-            else:
-                scaling_factor = 2.0
-
-            setattr(config, "rope_scaling", {"type": model_args.rope_scaling, "factor": scaling_factor})
-            # logger.info("Using {} scaling strategy and setting scaling factor to {}".format(
-            #     model_args.rope_scaling, scaling_factor
-            # ))
-
-        else:
-            pass
-            # logger.warning("Current model does not support RoPE scaling.")
-
-    # Set FlashAttention-2
-    if model_args.flash_attn:
-        if getattr(config, "model_type", None) == "llama":
-            LlamaModule.LlamaAttention = LlamaPatches.LlamaFlashAttention2
-            LlamaModule.LlamaModel._prepare_decoder_attention_mask = (
-                LlamaPatches._prepare_decoder_attention_mask
-            )
-            # logger.info("Using FlashAttention-2 for faster training and inference.")
-        # else:
-        #     logger.warning("Current model does not support FlashAttention-2.")
-    elif is_trainable and model_args.shift_attn and getattr(config, "model_type", None) == "llama":
-        LlamaModule.LlamaAttention = LlamaPatches.LlamaShiftShortAttention
-        # logger.warning("Using `--flash_attn` for faster training in large context length.")
-
-    # Quantization configurations (using bitsandbytes library).
+    compute_dtype = _infer_dtype()
     is_mergeable = True
     if model_args.quantization_bit is not None:
         if is_deepspeed_zero3_enabled():
@@ -178,9 +128,9 @@ def load_hf_model_and_tokenizer_complex(
             config_kwargs["load_in_4bit"] = True
             config_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
-                bnb_4bit_compute_dtype=model_args.compute_dtype,
-                bnb_4bit_use_double_quant=model_args.double_quantization,
-                bnb_4bit_quant_type=model_args.quantization_type
+                bnb_4bit_compute_dtype=compute_dtype,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4"
             )
 
         is_mergeable = False
@@ -191,27 +141,27 @@ def load_hf_model_and_tokenizer_complex(
     model = AutoModelForCausalLM.from_pretrained(
         model_to_load,
         config=config,
-        torch_dtype=model_args.compute_dtype,
+        torch_dtype=compute_dtype,
         low_cpu_mem_usage=(not is_deepspeed_zero3_enabled()),
         **config_kwargs
     )
 
     # Set shift short attention (S^2-Attn)
-    if is_trainable and model_args.shift_attn:
-        if getattr(config, "model_type", None) == "llama":
-            setattr(model, "shift_ratio", 0.25)
-            # logger.info("Using shift short attention proposed by LongLoRA.")
-        else:
-            pass
-            # logger.warning("Current model does not support shift short attention.")
+    # if is_trainable and model_args.shift_attn:
+    #     if getattr(config, "model_type", None) == "llama":
+    #         setattr(model, "shift_ratio", 0.25)
+    #         # logger.info("Using shift short attention proposed by LongLoRA.")
+    #     else:
+    #         pass
+    #         # logger.warning("Current model does not support shift short attention.")
 
     # Disable custom generate method (for Qwen and Baichuan2)
-    if isinstance(model, PreTrainedModel) and "GenerationMixin" not in str(model.generate.__func__):
-        model.generate = MethodType(PreTrainedModel.generate, model)
+    # if isinstance(model, PreTrainedModel) and "GenerationMixin" not in str(model.generate.__func__):
+    #     model.generate = MethodType(PreTrainedModel.generate, model)
 
-    # Fix LM head (for ChatGLM2)
-    if getattr(config, "model_type", None) == "chatglm":
-        setattr(model, "lm_head", model.transformer.output_layer)
+    # # Fix LM head (for ChatGLM2)
+    # if getattr(config, "model_type", None) == "chatglm":
+    #     setattr(model, "lm_head", model.transformer.output_layer)
 
     # Register auto class to save the custom code files.
     if isinstance(config, PretrainedConfig) and "AutoConfig" in getattr(config, "auto_map", {}):

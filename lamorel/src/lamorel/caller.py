@@ -1,3 +1,5 @@
+
+
 import torch.distributed as dist
 import typing
 from accelerate import Accelerator
@@ -8,8 +10,7 @@ import logging
 lamorel_logger = logging.getLogger('lamorel_logger')
 
 accelerator = Accelerator()
-
-class Caller: # @
+class Caller:
     '''
     This class should be called by each process.
     It will instantiate the different distributed groups.
@@ -25,7 +26,7 @@ class Caller: # @
         if not isinstance(numeric_log_level, int):
             raise ValueError('Invalid log level: %s' % config.log_level)
         lamorel_logger.setLevel(numeric_log_level)
-
+        
         # Initialize distributed groups
         # RL processes are considered as the first n processes
         rl_processes = list(range(config.distributed_setup_args.n_rl_processes))
@@ -34,6 +35,7 @@ class Caller: # @
             config.distributed_setup_args.n_rl_processes + config.distributed_setup_args.n_llm_processes))
 
         lamorel_logger.info("Init rl group for process {}".format(accelerator.process_index))
+        import ipdb;ipdb.set_trace()
         self._rl_group = dist.new_group(
             ranks=rl_processes,
             backend='gloo'
