@@ -101,7 +101,6 @@ def main(config_args):
             llm_scores = {_key: _score for _key, _score in zip(possible_actions, raw_llm_scores)}
             # for i in range(10):
                 
-                
             combined_scores = {_action: llm_scores[_action] * affordance_scores[_action] for _action in possible_actions}
             combined_scores = normalize_scores(combined_scores)
 

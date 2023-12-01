@@ -85,7 +85,7 @@ def blip_scoring(state, text_query, task_options, constraint_options, option_sta
     # desc = "Scoring " + str(len(options)) + " options\n"
 
     scores = {}
-    for option, choice in zip(options, response["logits"]): # @
+    for option, choice in zip(options, response["logits"]):
         tokens = choice["logprobs"]["tokens"]
         token_logprobs = choice["logprobs"]["token_logprobs"]
 

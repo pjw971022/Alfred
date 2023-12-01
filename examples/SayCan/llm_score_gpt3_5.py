@@ -1,6 +1,6 @@
 import openai
 openai.api_key =
-ENGINE = "gpt-3.5-turbo"  # "text-ada-001"
+ENGINE = "gpt-3.5-turbo-instruct"  # "text-ada-001"
 
 from initial_state import initial_state_description, system_prompt
 

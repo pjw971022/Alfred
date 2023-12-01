@@ -8,7 +8,7 @@ lamorel_args:
     config_file: ../configs/accelerate/default_config.yaml
     machine_rank: 0
     num_machines: 1
-  llm_args: # @
+  llm_args:
     model_type: seq2seq
     model_path: t5-small
     pretrained: true
